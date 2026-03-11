@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+  <!-- dialog & bottom sheet surface -->
+  <color name="surface_dark">#FF18181B</color>
+  <color name="surface_container_dark">#FF2A2A2A</color>
+
+  <!-- text -->
+  <color name="on_surface">#FFF2F2F2</color>
+  <color name="on_surface_variant">#FFCAC4D0</color>
+  <color name="hint">#FF888888</color>
+
+  <!-- accent (purple underline input) -->
+  <color name="primary_accent">#FF6750A4</color>
+
+  <!-- dekoratif -->
+  <color name="handle_tint">#66FFFFFF</color>
+  <color name="divider">#33CAC4D0</color>
+  <color name="img_placeholder_tint">#FFCCCCCC</color>
+
+</resources>
