@@ -6,6 +6,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Release APK
@@ -45,6 +48,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: app-release
+          path: .
 
       - name: Generate Release Name
         id: generate_name
