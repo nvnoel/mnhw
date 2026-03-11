@@ -31,11 +31,15 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew assembleRelease
 
+      - name: Rename APK
+        run: mv app/build/outputs/apk/release/app-release-unsigned.apk app-release.apk
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          path: app-release.apk
+          if-no-files-found: error
 
   release:
     name: Create GitHub Release
@@ -60,7 +64,7 @@ jobs:
         with:
           tag_name: ${{ env.tag_name }}
           name: Release ${{ env.tag_name }}
-          files: app-release-unsigned.apk
+          files: app-release.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
