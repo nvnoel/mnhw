@@ -18,7 +18,7 @@ object BuildConfig {
   const val VERSION_CODE = 170
 
   // fallback url — dipakai kalau CONFIG_URL gagal dan belum ada cache
-  const val BASE_URL = "https://shinigami.to/"
+  const val BASE_URL = "https://shinigami.to"
 
-  const val CONFIG_URL = "https://gist.githubusercontent.com/nvnoel/0f8d0eb0181ab79690cae43a21b41471/raw/e7c809930ed9fca4e138817b5b72a34cd82d4a5c/url.txt"
+  const val CONFIG_URL = "https://gist.githubusercontent.com/nvnoel/0f8d0eb0181ab79690cae43a21b41471/raw/c731f0ee231d166cfdc73bb797ab87a1a8dd6d2a/url.txt"
 }
