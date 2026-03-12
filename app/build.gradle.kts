@@ -1,19 +1,19 @@
 plugins {
-    alias(libs.plugins.android.application)
-    id("org.jetbrains.kotlin.android")
-    alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.hilt.android)
-    id("org.jetbrains.kotlin.kapt")
+    id("com.android.application")
+    kotlin("android")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
+    id("com.google.dagger.hilt.android")
 }
 
 android {
     namespace = "com.shinigami.client"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.shinigami.client"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
@@ -56,7 +56,7 @@ dependencies {
     implementation(libs.androidx.startup)
 
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.androidx.hilt.navigation.compose)
 
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
