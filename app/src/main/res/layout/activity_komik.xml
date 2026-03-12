@@ -50,7 +50,7 @@
       android:adjustViewBounds="true"
       android:contentDescription="@string/app_name"
       android:scaleType="fitCenter"
-      android:src="@mipmap/ic_launcher_adf"
+      android:src="@drawable/logo"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintEnd_toEndOf="parent"
       app:layout_constraintStart_toStartOf="parent"
