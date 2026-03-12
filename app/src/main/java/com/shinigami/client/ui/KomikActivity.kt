@@ -22,68 +22,48 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.ProgressBar
 import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.activity.compose.BackHandler
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isVisible
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.shinigami.client.R
 import com.shinigami.client.extension.WebExtension
 import com.shinigami.client.manager.DialogManager
 import com.shinigami.client.util.BuildConfig
 import com.shinigami.client.util.Logger
+import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 import java.util.Locale
 
-class KomikActivity : ComponentActivity(), PopupHost {
+class KomikActivity : AppCompatActivity(), PopupHost {
 
   private val vm: KomikViewModel by viewModels()
   private val ext by lazy { WebExtension() }
 
-  private var mainWeb: WebView? = null
+  private lateinit var web: WebView
+  private lateinit var splash: View
+  private lateinit var splashProgress: ProgressBar
+  private lateinit var swipe: SwipeRefreshLayout
+  private lateinit var root: ViewGroup
+  private var popup: WebView? = null
 
   private var fileCallback: ValueCallback<Array<Uri>>? = null
   private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
   private var lastBack = 0L
   private var touchX = 0
   private var touchY = 0
-
-  private var showMenuAction: ((String) -> Unit)? = null
-  private var onPopupReadyAction: ((WebView) -> Unit)? = null
 
   companion object {
     private const val TAG = "KomikActivity"
@@ -144,167 +124,18 @@ class KomikActivity : ComponentActivity(), PopupHost {
     }
   }
 
-  @OptIn(ExperimentalMaterial3Api::class)
   override fun onCreate(state: Bundle?) {
-    installSplashScreen()
     setupWindow()
     super.onCreate(state)
+    setContentView(R.layout.activity_komik)
 
-    setContent {
-      val uiState by vm.uiState.collectAsStateWithLifecycle()
+    bindViews()
+    setupWeb()
+    setupUI()
+    observeState()
+    setupBack()
 
-      var popupUrl by remember { mutableStateOf<String?>(null) }
-      var popupWebViewInstance by remember { mutableStateOf<WebView?>(null) }
-      var contextMenuUrl by remember { mutableStateOf<String?>(null) }
-
-      showMenuAction = { url -> contextMenuUrl = url }
-      onPopupReadyAction = { wv -> popupWebViewInstance = wv }
-
-      val isPopupVisible = popupUrl != null || popupWebViewInstance != null
-
-      BackHandler(enabled = true) {
-        when {
-          isPopupVisible -> {
-            popupUrl = null
-            popupWebViewInstance?.let {
-              it.stopLoading()
-              it.destroy()
-            }
-            popupWebViewInstance = null
-          }
-          mainWeb?.canGoBack() == true -> mainWeb?.goBack()
-          else -> handleExit()
-        }
-      }
-
-      Scaffold { paddingValues ->
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .padding(paddingValues)
-        ) {
-          PullToRefreshBox(
-            isRefreshing = uiState.loading && !uiState.splash,
-            onRefresh = {
-              if (isPopupVisible) popupWebViewInstance?.reload() else mainWeb?.reload()
-            },
-            modifier = Modifier.fillMaxSize()
-          ) {
-            AndroidView(
-              factory = { context ->
-                WebView(context).apply {
-                  mainWeb = this
-                  initWebSettings(this)
-                  setupWeb(this)
-
-                  state?.let { restoreState(it) }
-                }
-              },
-              update = { webView ->
-                val currentUrl = uiState.url
-                if (currentUrl != null && webView.url == null) {
-                  webView.loadUrl(currentUrl, vm.defaultHeaders)
-                }
-              },
-              onRelease = { webView ->
-                webView.stopLoading()
-                webView.destroy()
-                mainWeb = null
-              },
-              modifier = Modifier.fillMaxSize()
-            )
-          }
-
-          val currentPopupUrl = popupUrl
-          val currentPopupInstance = popupWebViewInstance
-
-          if (currentPopupUrl != null || currentPopupInstance != null) {
-            AndroidView(
-              factory = { context ->
-                currentPopupInstance ?: createPopupWebView(context).apply {
-                  if (currentPopupUrl != null) {
-                    loadUrl(currentPopupUrl)
-                  }
-                }
-              },
-              update = { webView ->
-                if (popupWebViewInstance == null) {
-                  popupWebViewInstance = webView
-                }
-              },
-              onRelease = { webView ->
-                webView.stopLoading()
-                webView.destroy()
-                if (popupWebViewInstance == webView) {
-                  popupWebViewInstance = null
-                }
-              },
-              modifier = Modifier.fillMaxSize()
-            )
-          }
-
-          AnimatedVisibility(
-            visible = uiState.splash,
-            exit = fadeOut(animationSpec = tween(500)),
-            modifier = Modifier.fillMaxSize()
-          ) {
-            Box(
-              modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF09090B))
-            ) {
-              LinearProgressIndicator(
-                progress = { uiState.progress / 100f },
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .height(2.dp)
-                  .align(Alignment.TopCenter),
-                color = Color.Red,
-                trackColor = Color.DarkGray,
-              )
-
-              Image(
-                painter = painterResource(id = R.drawable.logo),
-                contentDescription = "App Logo",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                  .fillMaxWidth(0.6f)
-                  .align(Alignment.Center)
-              )
-
-              Text(
-                text = "Developed by t.me/aeldy24",
-                color = Color(0xFFCCCCCC),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Light,
-                letterSpacing = 0.05.sp,
-                modifier = Modifier
-                  .align(Alignment.BottomCenter)
-                  .padding(bottom = 32.dp)
-              )
-            }
-          }
-        }
-      }
-
-      val currentContextMenuUrl = contextMenuUrl
-      if (currentContextMenuUrl != null) {
-        ContextMenuComposeSheet(
-          url = currentContextMenuUrl,
-          onDismiss = { contextMenuUrl = null },
-          onOpenPopup = { url: String ->
-            popupUrl = url
-            contextMenuUrl = null
-          }
-        )
-      }
-
-      LaunchedEffect(uiState.splash) {
-        if (!uiState.splash) {
-          checkFirstRun()
-        }
-      }
-    }
+    state?.let { web.restoreState(it) }
   }
 
   private fun setupWindow() {
@@ -312,6 +143,20 @@ class KomikActivity : ComponentActivity(), PopupHost {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
       window.attributes.layoutInDisplayCutoutMode =
         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+    }
+  }
+
+  private fun bindViews() {
+    root = findViewById(R.id.root_container)
+    web = findViewById(R.id.web_komik)
+    splash = findViewById(R.id.splash_layout)
+    splashProgress = findViewById(R.id.splash_progress)
+    swipe = findViewById(R.id.swipe_refresh_layout)
+
+    ViewCompat.setOnApplyWindowInsetsListener(root) { v: View, insets: WindowInsetsCompat ->
+      val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+      v.setPadding(0, 0, 0, ime.bottom)
+      insets
     }
   }
 
@@ -335,7 +180,9 @@ class KomikActivity : ComponentActivity(), PopupHost {
     }
   }
 
-  private fun setupWeb(web: WebView) {
+  private fun setupWeb() {
+    initWebSettings(web)
+
     ext.setLang(Locale.getDefault().toLanguageTag())
     ext.setUA(web.settings.userAgentString)
 
@@ -356,12 +203,12 @@ class KomikActivity : ComponentActivity(), PopupHost {
     }
 
     web.setOnLongClickListener {
-      detectImg(web)
+      detectImg()
       true
     }
   }
 
-  private fun detectImg(web: WebView) {
+  private fun detectImg() {
     if (touchX == 0 && touchY == 0) return
 
     val hit = web.hitTestResult
@@ -377,6 +224,59 @@ class KomikActivity : ComponentActivity(), PopupHost {
         ?.removeSurrounding("\"")
         ?.let { url: String -> showMenu(url) }
     }
+  }
+
+  private fun observeState() {
+    lifecycleScope.launch {
+      repeatOnLifecycle(Lifecycle.State.STARTED) {
+        vm.uiState.collect { s: KomikUiState -> handleState(s) }
+      }
+    }
+  }
+
+  private fun handleState(s: KomikUiState) {
+    if (s.url != null && web.url == null) {
+      web.loadUrl(s.url, vm.defaultHeaders)
+    }
+
+    swipe.isRefreshing = s.loading && !s.splash
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      splashProgress.setProgress(s.progress, true)
+    } else {
+      splashProgress.progress = s.progress
+    }
+
+    if (!s.splash && splash.isVisible && splash.alpha == 1f) {
+      splash.animate()
+        .alpha(0f)
+        .setDuration(500)
+        .setListener(object : android.animation.AnimatorListenerAdapter() {
+          override fun onAnimationEnd(animation: android.animation.Animator) {
+            if (isFinishing || isDestroyed) return
+            splash.visibility = View.GONE
+            checkFirstRun()
+          }
+        })
+    }
+  }
+
+  private fun setupUI() {
+    swipe.setOnRefreshListener {
+      if (popup != null) popup?.reload() else web.reload()
+    }
+  }
+
+  private fun setupBack() {
+    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+      override fun handleOnBackPressed() {
+        when {
+          popup != null -> closePopup()
+          web.canGoBack() -> web.goBack()
+          else -> handleExit()
+        }
+      }
+    })
   }
 
   private fun handleExit() {
@@ -413,8 +313,8 @@ class KomikActivity : ComponentActivity(), PopupHost {
     }
   }
 
-  private fun createPopupWebView(context: android.content.Context): WebView {
-    return WebView(context).apply {
+  private fun createPopupWebView(): WebView {
+    return WebView(this@KomikActivity).apply {
       initWebSettings(this)
 
       webViewClient = object : WebViewClient() {
@@ -430,17 +330,22 @@ class KomikActivity : ComponentActivity(), PopupHost {
         }
       }
 
-      webChromeClient = object : AppChromeClient() {
-        override fun onCloseWindow(window: WebView?) {
-          // Trigger the back handler logic by delegating to action
-          // Since we control popup via state, we will handle this directly or via BackHandler
-        }
-      }
+      webChromeClient = AppChromeClient()
     }
   }
 
   override fun openPopup(url: String) {
-    // handled by Compose state
+    val newWeb = createPopupWebView()
+
+    popup = newWeb
+    val params = ConstraintLayout.LayoutParams(
+      ConstraintLayout.LayoutParams.MATCH_PARENT,
+      ConstraintLayout.LayoutParams.MATCH_PARENT
+    )
+    root.addView(newWeb, params)
+    swipe.isVisible = false
+
+    newWeb.loadUrl(url)
   }
 
   private inner class AppWebClient : WebViewClient() {
@@ -481,7 +386,7 @@ class KomikActivity : ComponentActivity(), PopupHost {
     }
   }
 
-  private open inner class AppChromeClient : WebChromeClient() {
+  private inner class AppChromeClient : WebChromeClient() {
     override fun onProgressChanged(view: WebView, progress: Int) {
       vm.updateProgress(progress)
     }
@@ -538,16 +443,35 @@ class KomikActivity : ComponentActivity(), PopupHost {
     }
 
     override fun onCreateWindow(view: WebView?, isDialog: Boolean, gesture: Boolean, msg: Message?): Boolean {
-      val newWeb = createPopupWebView(view?.context ?: this@KomikActivity)
+      val newWeb = createPopupWebView()
+      popup = newWeb
+
+      val params = ConstraintLayout.LayoutParams(
+        ConstraintLayout.LayoutParams.MATCH_PARENT,
+        ConstraintLayout.LayoutParams.MATCH_PARENT
+      )
+      root.addView(newWeb, params)
+      swipe.isVisible = false
+
       (msg?.obj as? WebView.WebViewTransport)?.webView = newWeb
       msg?.sendToTarget()
-      onPopupReadyAction?.invoke(newWeb)
+
       return true
     }
   }
 
+  private fun closePopup() {
+    popup?.let {
+      it.stopLoading()
+      root.removeView(it)
+      it.destroy()
+      popup = null
+      swipe.isVisible = true
+    }
+  }
+
   private fun showMenu(url: String) {
-    showMenuAction?.invoke(url)
+    ContextMenuSheet.newInstance(url).show(supportFragmentManager, "menu")
   }
 
   private fun getDomain(url: String?) = try {
@@ -567,31 +491,42 @@ class KomikActivity : ComponentActivity(), PopupHost {
 
   override fun onPause() {
     super.onPause()
-    mainWeb?.onPause()
+    web.onPause()
+    popup?.onPause()
   }
 
   override fun onResume() {
     super.onResume()
-    mainWeb?.onResume()
+    web.onResume()
+    popup?.onResume()
   }
 
   override fun onDestroy() {
-    mainWeb?.let { webView ->
-      webView.stopLoading()
-      webView.onPause()
-      webView.pauseTimers()
-      webView.clearHistory()
-      webView.clearCache(false)
-      webView.clearFormData()
-      webView.loadUrl("about:blank")
-      (webView.parent as? ViewGroup)?.removeView(webView)
-      webView.destroy()
+    val webView: WebView = web
+
+    webView.stopLoading()
+    webView.onPause()
+    webView.pauseTimers()
+
+    popup?.apply {
+      stopLoading()
+      onPause()
     }
-    mainWeb = null
 
-    showMenuAction = null
-    onPopupReadyAction = null
+    webView.clearHistory()
+    webView.clearCache(false)
+    webView.clearFormData()
+    webView.loadUrl("about:blank")
+    (webView.parent as? ViewGroup)?.removeView(webView)
 
+    popup?.let { popupView: WebView ->
+      popupView.loadUrl("about:blank")
+      root.removeView(popupView)
+      popupView.destroy()
+    }
+    popup = null
+
+    webView.destroy()
     ext.kill()
 
     super.onDestroy()

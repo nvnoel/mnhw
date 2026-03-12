@@ -39,7 +39,7 @@ android:roundIcon="@mipmap/ic_launcher_adf"
 			android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
 			android:hardwareAccelerated="true"
 			android:supportsPictureInPicture="true"
-			android:theme="@style/AppTheme.Starting"
+			android:theme="@style/AppTheme.FullScreen"
 			android:windowSoftInputMode="adjustResize"
 			android:exported="true">
 			<intent-filter>
