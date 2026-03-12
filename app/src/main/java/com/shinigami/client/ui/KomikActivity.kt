@@ -248,11 +248,12 @@ class KomikActivity : AppCompatActivity(), PopupHost {
       splashProgress.progress = s.progress
     }
 
-    if (!s.splash && splash.isVisible) {
+    if (!s.splash && splash.isVisible && splash.alpha == 1f) {
       splash.animate()
         .alpha(0f)
         .setDuration(500)
         .withEndAction {
+          if (isFinishing || isDestroyed) return@withEndAction
           splash.visibility = View.GONE
           checkFirstRun()
         }
