@@ -114,7 +114,7 @@ class ContextMenuSheet : BottomSheetDialogFragment() {
           .build()
 
         val bmp = WebExtension.sharedClient.newCall(req).execute().use { res ->
-          res.body?.byteStream()?.buffered()?.let { BitmapFactory.decodeStream(it) }
+          res.body.byteStream().buffered().let { BitmapFactory.decodeStream(it) }
         }
 
         withContext(Dispatchers.Main) {

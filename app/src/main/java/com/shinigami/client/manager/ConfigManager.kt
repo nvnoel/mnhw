@@ -23,7 +23,7 @@ class ConfigManager(private val prefs: SharedPreferences) {
         .build()
 
       val fetched = WebExtension.sharedClient.newCall(req).execute().use { res ->
-        res.body?.string()?.trim()?.takeIf { it.startsWith("http") }
+        res.body.string().trim().takeIf { it.startsWith("http") }
       }
 
       if (fetched != null) {

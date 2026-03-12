@@ -112,7 +112,7 @@ class WebExtension {
           ?.takeIf { it.contains("html", ignoreCase = true) }
           ?: return null
 
-        val html = res.body?.use { it.string() } ?: return null
+        val html = res.body.use { it.string() }
 
         // fix #1: hapus early return saat flag tidak ditemukan
         // sebelumnya return null di sini → WebView bikin duplicate request ke URL yang sama

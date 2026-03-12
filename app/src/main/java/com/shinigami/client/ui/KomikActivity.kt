@@ -164,7 +164,6 @@ class KomikActivity : AppCompatActivity(), PopupHost {
     w.settings.apply {
       javaScriptEnabled = true
       domStorageEnabled = true
-      databaseEnabled = true
       useWideViewPort = true
       loadWithOverviewMode = true
       setSupportZoom(true)
@@ -252,11 +251,13 @@ class KomikActivity : AppCompatActivity(), PopupHost {
       splash.animate()
         .alpha(0f)
         .setDuration(500)
-        .withEndAction {
-          if (isFinishing || isDestroyed) return@withEndAction
-          splash.visibility = View.GONE
-          checkFirstRun()
-        }
+        .setListener(object : android.animation.AnimatorListenerAdapter() {
+          override fun onAnimationEnd(animation: android.animation.Animator) {
+            if (isFinishing || isDestroyed) return
+            splash.visibility = View.GONE
+            checkFirstRun()
+          }
+        })
     }
   }
 
