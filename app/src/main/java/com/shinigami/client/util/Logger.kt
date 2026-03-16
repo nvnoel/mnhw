@@ -2,201 +2,164 @@ package com.shinigami.client.util
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 object Logger {
 
-  private const val TAG = "Logger"
-  private const val LOG_DIR = "log"
-  private const val MAX_QUEUE_SIZE = 1000
+    private const val TAG = "Logger"
+    private const val LOG_DIR = "log"
 
-  private val timeFmt = object : ThreadLocal<SimpleDateFormat>() {
-    override fun initialValue() = SimpleDateFormat("HH:mm:ss", Locale.US)
-  }
+    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
-  private val dateFmt = object : ThreadLocal<SimpleDateFormat>() {
-    override fun initialValue() = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-  }
+    private val logChannel = Channel<String>(capacity = 1000, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-  private val stringBuilder = ThreadLocal.withInitial { StringBuilder(256) }
+    private var file: File? = null
+    private var writer: BufferedWriter? = null
+    @Volatile private var isReady = false
 
-  private val queue = ConcurrentLinkedQueue<String>()
-  private val worker = Executors.newSingleThreadExecutor()
+    fun init(context: Context) {
+        if (!AppConfig.ENABLE_LOGGER || isReady) return
 
-  private var file: File? = null
-  // writer di-keep open, ditutup hanya saat shutdown atau rotate
-  private var writer: BufferedWriter? = null
-  @Volatile private var ready = false
-
-  fun init(context: Context) {
-    if (!BuildConfig.ENABLE_LOGGER || ready) return
-
-    try {
-      val root = context.getExternalFilesDir(null) ?: context.filesDir
-      val dir = File(root, LOG_DIR)
-
-      if (!dir.exists()) dir.mkdirs()
-
-      val dateStr = dateFmt.get()?.format(Date()) ?: "unknown"
-      file = File(dir, "shngm-log_$dateStr.txt")
-      cleanOld(dir)
-
-      writer = BufferedWriter(FileWriter(file, true))
-
-      if (file?.exists() == false) {
-        write("=== Shinigami v${BuildConfig.VERSION_NAME} ===\n")
-      }
-
-      ready = true
-      Log.i(TAG, "Logger initialized at: ${file?.absolutePath}")
-    } catch (e: Exception) {
-      Log.e(TAG, "Init failed: ${e.message}")
-    }
-  }
-
-  private fun cleanOld(dir: File) {
-    try {
-      dir.listFiles()
-        ?.sortedByDescending { it.lastModified() }
-        ?.drop(BuildConfig.MAX_LOG_FILES)
-        ?.forEach { it.delete() }
-    } catch (e: Exception) {
-      Log.e(TAG, "Cleanup failed: ${e.message}")
-    }
-  }
-
-  fun v(tag: String, msg: String) = log("V", tag, msg)
-  fun d(tag: String, msg: String) = log("D", tag, msg)
-  fun i(tag: String, msg: String) = log("I", tag, msg)
-  fun w(tag: String, msg: String) = log("W", tag, msg)
-  fun e(tag: String, msg: String, err: Throwable? = null) {
-    log("E", tag, err?.let { "$msg: ${it.message}" } ?: msg)
-    err?.let { logErr(it) }
-  }
-
-  private fun log(lvl: String, tag: String, msg: String) {
-    if (!BuildConfig.ENABLE_LOGGER) return
-
-    when (lvl) {
-      "V" -> Log.v(tag, msg)
-      "D" -> Log.d(tag, msg)
-      "I" -> Log.i(tag, msg)
-      "W" -> Log.w(tag, msg)
-      "E" -> Log.e(tag, msg)
-    }
-
-    if (ready) {
-      val time = timeFmt.get()?.format(Date()) ?: "00:00:00"
-      offerBounded("$time [$lvl] $tag: $msg\n")
-      flush()
-    }
-  }
-
-  private fun offerBounded(text: String) {
-    if (queue.size >= MAX_QUEUE_SIZE) queue.poll()
-    queue.offer(text)
-  }
-
-  private fun logErr(err: Throwable) {
-    if (!ready) return
-
-    val builder = stringBuilder.get()!!.apply { setLength(0) }
-    builder.append("  ↳ ${err.javaClass.simpleName}: ${err.message}\n")
-    err.stackTrace.take(5).forEach { builder.append("  at $it\n") }
-
-    offerBounded(builder.toString())
-    flush()
-  }
-
-  private fun flush() {
-    if (worker.isShutdown) return
-    worker.execute { writeQueue() }
-  }
-
-  fun flushNow() {
-    if (!ready || worker.isShutdown) return
-    try {
-      val future = worker.submit { writeQueue() }
-      future.get(1000, TimeUnit.MILLISECONDS)
-    } catch (e: Exception) {
-      Log.e(TAG, "Flush failed: ${e.message}")
-    }
-  }
-
-  private fun writeQueue() {
-    while (!queue.isEmpty()) {
-      queue.poll()?.let { write(it) }
-    }
-    // flush buffer sekali setelah drain queue
-    try { writer?.flush() } catch (e: Exception) { Log.e(TAG, "Flush err: ${e.message}") }
-    checkSize()
-  }
-
-  // tulis ke writer yang sudah open — tidak buka/tutup tiap kali
-  private fun write(text: String) {
-    try {
-      writer?.write(text)
-    } catch (e: Exception) {
-      Log.e(TAG, "Write failed: ${e.message}")
-    }
-  }
-
-  private fun checkSize() {
-    file?.let { f ->
-      if (f.length() > BuildConfig.MAX_LOG_FILE_SIZE) {
-        val backup = File(f.parent, "${f.nameWithoutExtension}_${System.currentTimeMillis()}.txt")
-        // tutup writer sebelum rename file
-        try { writer?.close() } catch (_: Exception) {}
-        f.renameTo(backup)
-        // buka writer baru untuk file baru
         try {
-          writer = BufferedWriter(FileWriter(f, true))
-          write("=== Rotated from ${backup.name} ===\n")
+            val root = context.getExternalFilesDir(null) ?: context.filesDir
+            val dir = File(root, LOG_DIR).apply { if (!exists()) mkdirs() }
+
+            val dateStr = dateFormat.format(Date())
+            file = File(dir, "shngm-log_$dateStr.txt")
+            cleanOldLogs(dir)
+
+            writer = BufferedWriter(FileWriter(file, true))
+
+            if (file?.length() == 0L) {
+                writeDirectly("=== Shinigami v${AppConfig.VERSION_NAME} ===\n")
+            }
+
+            isReady = true
+            Log.i(TAG, "Logger initialized at: ${file?.absolutePath}")
+
+            startLogConsumer()
         } catch (e: Exception) {
-          Log.e(TAG, "Rotate failed: ${e.message}")
+            Log.e(TAG, "Initialization failed", e)
         }
-      }
-    }
-  }
-
-  fun logCrash(err: Throwable) {
-    if (!BuildConfig.ENABLE_CRASH_LOG) return
-
-    val crash = buildString {
-      append("\n╔═══ CRASH ═══════════════════════════════════════════════╗\n")
-      append("║ ${err.javaClass.simpleName}: ${err.message}\n")
-      err.stackTrace.take(15).forEach { append("║   $it\n") }
-      append("╚═════════════════════════════════════════════════════════╝\n")
     }
 
-    offerBounded(crash)
-    flush()
-  }
-
-  fun logNetwork(method: String, url: String, code: Int, time: Long) {
-    if (!BuildConfig.ENABLE_NETWORK_LOG) return
-    d("Network", "$method $url → $code (${time}ms)")
-  }
-
-  fun path() = file?.absolutePath
-
-  fun shutdown() {
-    try {
-      ready = false
-      worker.shutdown()
-      writer?.flush()
-      writer?.close()
-      writer = null
-    } catch (e: Exception) {
-      Log.e(TAG, "Shutdown error: ${e.message}")
+    private fun startLogConsumer() {
+        scope.launch {
+            for (msg in logChannel) {
+                if (!isReady) break
+                writeDirectly(msg)
+                writer?.flush()
+                checkLogRotation()
+            }
+        }
     }
-  }
+
+    private fun cleanOldLogs(dir: File) {
+        try {
+            dir.listFiles()
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(AppConfig.MAX_LOG_FILES)
+                ?.forEach { it.delete() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clean old logs", e)
+        }
+    }
+
+    fun v(tag: String, msg: String) = log("V", tag, msg)
+    fun d(tag: String, msg: String) = log("D", tag, msg)
+    fun i(tag: String, msg: String) = log("I", tag, msg)
+    fun w(tag: String, msg: String) = log("W", tag, msg)
+    fun e(tag: String, msg: String, err: Throwable? = null) {
+        log("E", tag, err?.let { "$msg: ${it.message}" } ?: msg)
+        err?.let { logErrorTrace(it) }
+    }
+
+    private fun log(level: String, tag: String, msg: String) {
+        if (!AppConfig.ENABLE_LOGGER) return
+
+        when (level) {
+            "V" -> Log.v(tag, msg)
+            "D" -> Log.d(tag, msg)
+            "I" -> Log.i(tag, msg)
+            "W" -> Log.w(tag, msg)
+            "E" -> Log.e(tag, msg)
+        }
+
+        if (isReady) {
+            val time = timeFormat.format(Date())
+            logChannel.trySend("$time [$level] $tag: $msg\n")
+        }
+    }
+
+    private fun logErrorTrace(err: Throwable) {
+        if (!isReady) return
+        val builder = StringBuilder().apply {
+            append("  ↳ ${err.javaClass.simpleName}: ${err.message}\n")
+            err.stackTrace.take(5).forEach { append("  at $it\n") }
+        }
+        logChannel.trySend(builder.toString())
+    }
+
+    fun logCrash(err: Throwable) {
+        if (!AppConfig.ENABLE_CRASH_LOG) return
+        val crash = buildString {
+            append("\n╔═══ CRASH ═══════════════════════════════════════════════╗\n")
+            append("║ ${err.javaClass.simpleName}: ${err.message}\n")
+            err.stackTrace.take(15).forEach { append("║   $it\n") }
+            append("╚═════════════════════════════════════════════════════════╝\n")
+        }
+        logChannel.trySend(crash)
+    }
+
+    fun logNetwork(method: String, url: String, code: Int, timeMs: Long) {
+        if (!AppConfig.ENABLE_NETWORK_LOG) return
+        d("Network", "$method $url → $code (${timeMs}ms)")
+    }
+
+    private fun writeDirectly(text: String) {
+        try {
+            writer?.write(text)
+        } catch (e: Exception) {
+            Log.e(TAG, "Write failed", e)
+        }
+    }
+
+    private fun checkLogRotation() {
+        val f = file ?: return
+        if (f.length() > AppConfig.MAX_LOG_FILE_SIZE) {
+            val backup = File(f.parent, "${f.nameWithoutExtension}_${System.currentTimeMillis()}.txt")
+            try { writer?.close() } catch (_: Exception) {}
+            f.renameTo(backup)
+            try {
+                writer = BufferedWriter(FileWriter(f, true))
+                writeDirectly("=== Rotated from ${backup.name} ===\n")
+            } catch (e: Exception) {
+                Log.e(TAG, "Rotation failed", e)
+            }
+        }
+    }
+
+    fun shutdown() {
+        isReady = false
+        logChannel.close()
+        try {
+            writer?.flush()
+            writer?.close()
+            writer = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Shutdown error", e)
+        }
+    }
 }

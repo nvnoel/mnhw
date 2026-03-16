@@ -1,6 +1,7 @@
 package com.shinigami.client.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -22,7 +23,6 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,498 +37,566 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-import com.shinigami.client.R
+import com.shinigami.client.databinding.ActivityKomikBinding
 import com.shinigami.client.extension.WebExtension
 import com.shinigami.client.manager.DialogManager
-import com.shinigami.client.util.BuildConfig
+import com.shinigami.client.util.AppConfig
 import com.shinigami.client.util.Logger
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
+import java.lang.ref.WeakReference
 import java.util.Locale
 
 class KomikActivity : AppCompatActivity(), PopupHost {
 
-  private val vm: KomikViewModel by viewModels()
-  private val ext by lazy { WebExtension() }
+    private val viewModel: KomikViewModel by viewModels()
+    private val webExtension by lazy { WebExtension() }
 
-  private lateinit var web: WebView
-  private lateinit var splash: View
-  private lateinit var splashProgress: ProgressBar
-  private lateinit var swipe: SwipeRefreshLayout
-  private lateinit var root: ViewGroup
-  private var popup: WebView? = null
+    private lateinit var binding: ActivityKomikBinding
+    private var popupWebView: WebView? = null
 
-  private var fileCallback: ValueCallback<Array<Uri>>? = null
-  private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
-  private var lastBack = 0L
-  private var touchX = 0
-  private var touchY = 0
+    private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
 
-  companion object {
-    private const val TAG = "KomikActivity"
-    private val JS_IMG_DETECT = """(function(x,y){const e=document.elementsFromPoint(x,y);if(!e.length)return null;const g=(n)=>{if(!n)return null;const t=n.tagName;if(t==='IMG')return n.currentSrc||n.srcset?.split(' ')[0]||n.src||n.dataset.src||n.dataset.lazySrc;if(t==='CANVAS'){try{return n.toDataURL()}catch(e){}}if(t==='image'||t==='svg')return n.href?.baseVal||n.getAttribute('xlink:href');const s=getComputedStyle(n).backgroundImage;if(s&&s!=='none'&&s.startsWith('url(')){const m=s.match(/url\(['"]?([^'"]+)['"]?\)/);if(m)return m[1]}return null};for(let i=0;i<e.length;i++){const u=g(e[i]);if(u)return u}let p=e[0];for(let d=0;d<5&&p;d++){const u=g(p);if(u)return u;p=p.parentElement}return null})(%d,%d)""".trimIndent().replace("\n", "")
+    private var lastBackPressedTime = 0L
+    private var touchXCoordinate = 0
+    private var touchYCoordinate = 0
 
-    private val EMPTY_STREAM = ByteArrayInputStream(ByteArray(0))
-  }
+    private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val callback = fileUploadCallback ?: return@registerForActivityResult
+        fileUploadCallback = null
+        pendingFileChooserParams = null
 
-  private val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-    val cb = fileCallback ?: return@registerForActivityResult
-    fileCallback = null
-    pendingFileChooserParams = null
-
-    try {
-      val uris = if (res.resultCode == RESULT_OK) {
-        res.data?.data?.let { arrayOf(it) }
-          ?: res.data?.clipData?.let { clip ->
-            Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
-          }
-      } else null
-
-      cb.onReceiveValue(uris)
-    } catch (e: Exception) {
-      cb.onReceiveValue(null)
-    }
-  }
-
-  private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-    val granted = perms.all { it.value }
-
-    if (!granted) {
-      Toast.makeText(this, "Izin akses file diperlukan untuk upload", Toast.LENGTH_SHORT).show()
-      fileCallback?.onReceiveValue(null)
-      fileCallback = null
-      pendingFileChooserParams = null
-    } else {
-      pendingFileChooserParams?.let { params ->
         try {
-          val intent = params.createIntent().apply { addCategory(Intent.CATEGORY_OPENABLE) }
+            val resultUris = if (result.resultCode == RESULT_OK) {
+                result.data?.data?.let { arrayOf(it) }
+                    ?: result.data?.clipData?.let { clipData ->
+                        Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+                    }
+            } else null
 
-          if (intent.resolveActivity(packageManager) != null) {
-            filePicker.launch(intent)
-          } else {
-            Toast.makeText(this, "Tidak ada aplikasi file manager", Toast.LENGTH_SHORT).show()
-            fileCallback?.onReceiveValue(null)
-            fileCallback = null
-            pendingFileChooserParams = null
-          }
+            callback.onReceiveValue(resultUris)
         } catch (e: Exception) {
-          Toast.makeText(this, "Gagal membuka file picker", Toast.LENGTH_SHORT).show()
-          fileCallback?.onReceiveValue(null)
-          fileCallback = null
-          pendingFileChooserParams = null
+            callback.onReceiveValue(null)
         }
-      } ?: run {
-        Toast.makeText(this, "Izin diberikan, silakan coba lagi", Toast.LENGTH_SHORT).show()
-      }
-    }
-  }
-
-  override fun onCreate(state: Bundle?) {
-    setupWindow()
-    super.onCreate(state)
-    setContentView(R.layout.activity_komik)
-
-    bindViews()
-    setupWeb()
-    setupUI()
-    observeState()
-    setupBack()
-
-    state?.let { web.restoreState(it) }
-  }
-
-  private fun setupWindow() {
-    WindowCompat.setDecorFitsSystemWindows(window, false)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-      window.attributes.layoutInDisplayCutoutMode =
-        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-    }
-  }
-
-  private fun bindViews() {
-    root = findViewById(R.id.root_container)
-    web = findViewById(R.id.web_komik)
-    splash = findViewById(R.id.splash_layout)
-    splashProgress = findViewById(R.id.splash_progress)
-    swipe = findViewById(R.id.swipe_refresh_layout)
-
-    ViewCompat.setOnApplyWindowInsetsListener(root) { v: View, insets: WindowInsetsCompat ->
-      val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-      v.setPadding(0, 0, 0, ime.bottom)
-      insets
-    }
-  }
-
-  private fun initWebSettings(w: WebView) {
-    w.settings.apply {
-      javaScriptEnabled = true
-      domStorageEnabled = true
-      useWideViewPort = true
-      loadWithOverviewMode = true
-      setSupportZoom(true)
-      builtInZoomControls = true
-      displayZoomControls = false
-      setSupportMultipleWindows(true)
-      javaScriptCanOpenWindowsAutomatically = true
-      cacheMode = WebSettings.LOAD_DEFAULT
-      mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-      allowFileAccess = true
-      allowContentAccess = true
-
-      userAgentString = userAgentString.replace("; wv", "")
-    }
-  }
-
-  private fun setupWeb() {
-    initWebSettings(web)
-
-    ext.setLang(Locale.getDefault().toLanguageTag())
-    ext.setUA(web.settings.userAgentString)
-
-    CookieManager.getInstance().apply {
-      setAcceptCookie(true)
-      setAcceptThirdPartyCookies(web, true)
     }
 
-    web.webViewClient = AppWebClient()
-    web.webChromeClient = AppChromeClient()
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        val allGranted = permissions.all { it.value }
 
-    web.setOnTouchListener { _: View, e: MotionEvent ->
-      if (e.action == MotionEvent.ACTION_DOWN) {
-        touchX = e.x.toInt()
-        touchY = e.y.toInt()
-      }
-      false
+        if (!allGranted) {
+            Toast.makeText(this, "Izin akses media diperlukan untuk mengunggah file.", Toast.LENGTH_SHORT).show()
+            fileUploadCallback?.onReceiveValue(null)
+            fileUploadCallback = null
+            pendingFileChooserParams = null
+        } else {
+            pendingFileChooserParams?.let { params ->
+                launchFileChooser(params)
+            } ?: run {
+                Toast.makeText(this, "Izin berhasil diberikan, silakan ulangi tindakan Anda.", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
-    web.setOnLongClickListener {
-      detectImg()
-      true
-    }
-  }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        setupWindowConfiguration()
+        super.onCreate(savedInstanceState)
+        binding = ActivityKomikBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-  private fun detectImg() {
-    if (touchX == 0 && touchY == 0) return
+        setupInsets()
+        initializeWebView()
+        setupUIInteractions()
+        observeViewModelState()
+        setupBackNavigation()
 
-    val hit = web.hitTestResult
-    if (hit.type == WebView.HitTestResult.IMAGE_TYPE ||
-      hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
-      hit.extra?.let { url: String -> showMenu(url) }
-      return
-    }
-
-    val js = JS_IMG_DETECT.format(touchX, touchY)
-    web.evaluateJavascript(js) { res: String? ->
-      res?.takeIf { it != "null" && it.length > 2 }
-        ?.removeSurrounding("\"")
-        ?.let { url: String -> showMenu(url) }
-    }
-  }
-
-  private fun observeState() {
-    lifecycleScope.launch {
-      repeatOnLifecycle(Lifecycle.State.STARTED) {
-        vm.uiState.collect { s: KomikUiState -> handleState(s) }
-      }
-    }
-  }
-
-  private fun handleState(s: KomikUiState) {
-    if (s.url != null && web.url == null) {
-      web.loadUrl(s.url, vm.defaultHeaders)
+        savedInstanceState?.let { binding.webKomik.restoreState(it) }
     }
 
-    swipe.isRefreshing = s.loading && !s.splash
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-      splashProgress.setProgress(s.progress, true)
-    } else {
-      splashProgress.progress = s.progress
+    private fun setupWindowConfiguration() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
     }
 
-    if (!s.splash && splash.isVisible && splash.alpha == 1f) {
-      splash.animate()
-        .alpha(0f)
-        .setDuration(500)
-        .setListener(object : android.animation.AnimatorListenerAdapter() {
-          override fun onAnimationEnd(animation: android.animation.Animator) {
-            if (isFinishing || isDestroyed) return
-            splash.visibility = View.GONE
-            checkFirstRun()
-          }
+    private fun setupInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(binding.rootContainer) { view, insets ->
+            val imeInsets = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(0, 0, 0, imeInsets.bottom)
+            insets
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
+    private fun initializeWebView() {
+        configureWebSettings(binding.webKomik)
+
+        webExtension.setLanguage(Locale.getDefault().toLanguageTag())
+        webExtension.setUserAgent(binding.webKomik.settings.userAgentString)
+
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(binding.webKomik, true)
+        }
+
+        binding.webKomik.webViewClient = DefaultWebViewClient(this)
+        binding.webKomik.webChromeClient = DefaultWebChromeClient(this)
+
+        binding.webKomik.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                touchXCoordinate = event.x.toInt()
+                touchYCoordinate = event.y.toInt()
+            }
+            false
+        }
+
+        binding.webKomik.setOnLongClickListener {
+            detectImageElement()
+            true
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configureWebSettings(webView: WebView) {
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            cacheMode = WebSettings.LOAD_DEFAULT
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            allowFileAccess = true
+            allowContentAccess = true
+
+            userAgentString = userAgentString.replace("; wv", "")
+        }
+    }
+
+    private fun detectImageElement() {
+        if (touchXCoordinate == 0 && touchYCoordinate == 0) return
+
+        val hitTestResult = binding.webKomik.hitTestResult
+        if (hitTestResult.type == WebView.HitTestResult.IMAGE_TYPE || hitTestResult.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+            hitTestResult.extra?.let { url -> showContextMenu(url) }
+            return
+        }
+
+        val javascriptCommand = JAVASCRIPT_IMAGE_DETECTOR.format(touchXCoordinate, touchYCoordinate)
+        binding.webKomik.evaluateJavascript(javascriptCommand) { result ->
+            result?.takeIf { it != "null" && it.length > 2 }
+                ?.removeSurrounding("\"")
+                ?.let { imageUrl -> showContextMenu(imageUrl) }
+        }
+    }
+
+    private fun observeViewModelState() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.uiState.collect { state ->
+                    renderUiState(state)
+                }
+            }
+        }
+    }
+
+    private fun renderUiState(state: KomikUiState) {
+        if (state.url != null && binding.webKomik.url == null) {
+            binding.webKomik.loadUrl(state.url, viewModel.defaultHeaders)
+        }
+
+        binding.swipeRefreshLayout.isRefreshing = state.isLoading && !state.isSplashVisible
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            binding.splashProgress.setProgress(state.loadingProgress, true)
+        } else {
+            binding.splashProgress.progress = state.loadingProgress
+        }
+
+        if (!state.isSplashVisible && binding.splashLayout.isVisible && binding.splashLayout.alpha == 1f) {
+            binding.splashLayout.animate()
+                .alpha(0f)
+                .setDuration(500)
+                .setListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (isFinishing || isDestroyed) return
+                        binding.splashLayout.visibility = View.GONE
+                        performFirstRunCheck()
+                    }
+                })
+        }
+    }
+
+    private fun setupUIInteractions() {
+        binding.swipeRefreshLayout.setOnRefreshListener {
+            if (popupWebView != null) {
+                popupWebView?.reload()
+            } else {
+                binding.webKomik.reload()
+            }
+        }
+    }
+
+    private fun setupBackNavigation() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when {
+                    popupWebView != null -> dismissPopup()
+                    binding.webKomik.canGoBack() -> binding.webKomik.goBack()
+                    else -> handleApplicationExit()
+                }
+            }
         })
     }
-  }
 
-  private fun setupUI() {
-    swipe.setOnRefreshListener {
-      if (popup != null) popup?.reload() else web.reload()
-    }
-  }
-
-  private fun setupBack() {
-    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-      override fun handleOnBackPressed() {
-        when {
-          popup != null -> closePopup()
-          web.canGoBack() -> web.goBack()
-          else -> handleExit()
+    private fun handleApplicationExit() {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastBackPressedTime < 2000L) {
+            finish()
+        } else {
+            lastBackPressedTime = currentTime
+            Toast.makeText(this, "Tekan kembali sekali lagi untuk keluar", Toast.LENGTH_SHORT).show()
         }
-      }
-    })
-  }
-
-  private fun handleExit() {
-    val now = System.currentTimeMillis()
-    if (now - lastBack < 2000L) {
-      finish()
-    } else {
-      lastBack = now
-      Toast.makeText(this, "Tekan sekali lagi untuk keluar", Toast.LENGTH_SHORT).show()
     }
-  }
 
-  private fun hasStoragePerm(): Boolean {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-      ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-    } else true
-  }
-
-  private fun requestStoragePerm() {
-    val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
-    } else {
-      arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    private fun hasRequiredStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
     }
-    permLauncher.launch(perms)
-  }
 
-  private fun enableEruda(view: WebView) {
-    if (BuildConfig.ENABLE_ERUDA) {
-      val erudaScript = """(function(){if(typeof eruda==='undefined'){var script=document.createElement('script');script.src="https://cdn.jsdelivr.net/npm/eruda";document.body.appendChild(script);script.onload=function(){eruda.init();}}})();"""
-      view.evaluateJavascript(erudaScript, null)
+    private fun requestStoragePermission() {
+        val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        permissionLauncher.launch(requiredPermissions)
     }
-  }
 
-  private fun createPopupWebView(): WebView {
-    return WebView(this@KomikActivity).apply {
-      initWebSettings(this)
+    private fun launchFileChooser(params: WebChromeClient.FileChooserParams) {
+        try {
+            val fileIntent = params.createIntent().apply { addCategory(Intent.CATEGORY_OPENABLE) }
+            if (fileIntent.resolveActivity(packageManager) != null) {
+                filePickerLauncher.launch(fileIntent)
+            } else {
+                Toast.makeText(this, "Aplikasi manajer file tidak ditemukan di perangkat ini.", Toast.LENGTH_SHORT).show()
+                clearFileChooserState()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Gagal membuka jendela pemilihan file.", Toast.LENGTH_SHORT).show()
+            clearFileChooserState()
+        }
+    }
 
-      webViewClient = object : WebViewClient() {
-        override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
-          if (req.url.toString().contains("googletagmanager")) {
-            return WebResourceResponse("text/plain", "utf-8", EMPTY_STREAM)
-          }
-          return super.shouldInterceptRequest(view, req)
+    private fun clearFileChooserState() {
+        fileUploadCallback?.onReceiveValue(null)
+        fileUploadCallback = null
+        pendingFileChooserParams = null
+    }
+
+    private fun injectErudaConsole(webView: WebView) {
+        if (AppConfig.ENABLE_ERUDA) {
+            val erudaScript = """(function(){if(typeof eruda==='undefined'){var script=document.createElement('script');script.src="https://cdn.jsdelivr.net/npm/eruda";document.body.appendChild(script);script.onload=function(){eruda.init();}}})();"""
+            webView.evaluateJavascript(erudaScript, null)
+        }
+    }
+
+    override fun openPopupWebView(url: String) {
+        val newWebView = WebView(this).apply {
+            configureWebSettings(this)
+
+            webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                    if (request.url.toString().contains("googletagmanager")) {
+                        return WebResourceResponse("text/plain", "utf-8", EMPTY_INPUT_STREAM)
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
+
+                override fun onPageFinished(view: WebView, url: String) {
+                    injectErudaConsole(view)
+                }
+            }
+
+            webChromeClient = DefaultWebChromeClient(this@KomikActivity)
+        }
+
+        popupWebView = newWebView
+        val layoutParams = ConstraintLayout.LayoutParams(
+            ConstraintLayout.LayoutParams.MATCH_PARENT,
+            ConstraintLayout.LayoutParams.MATCH_PARENT
+        )
+        binding.rootContainer.addView(newWebView, layoutParams)
+        binding.swipeRefreshLayout.isVisible = false
+
+        newWebView.loadUrl(url)
+    }
+
+    private fun dismissPopup() {
+        popupWebView?.let { webView ->
+            webView.stopLoading()
+            binding.rootContainer.removeView(webView)
+            webView.destroy()
+            popupWebView = null
+            binding.swipeRefreshLayout.isVisible = true
+        }
+    }
+
+    private fun showContextMenu(url: String) {
+        ContextMenuSheet.newInstance(url).show(supportFragmentManager, "ContextMenuSheet")
+    }
+
+    private fun extractDomainFromUrl(url: String?): String {
+        return try {
+            Uri.parse(url).host ?: "Situs Web"
+        } catch (e: Exception) {
+            "Situs Web"
+        }
+    }
+
+    private fun performFirstRunCheck() {
+        val sharedPrefs = getSharedPreferences("Shinigami", MODE_PRIVATE)
+        if (!sharedPrefs.getBoolean(PREF_WELCOME_SHOWN, false)) {
+            DialogManager.info(
+                ctx = this,
+                title = "Selamat Datang!",
+                msg = "Login dengan akun Google untuk membuka fitur premium secara gratis."
+            )
+            sharedPrefs.edit().putBoolean(PREF_WELCOME_SHOWN, true).apply()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        binding.webKomik.onPause()
+        popupWebView?.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        binding.webKomik.onResume()
+        popupWebView?.onResume()
+    }
+
+    override fun onDestroy() {
+        val mainWebView: WebView = binding.webKomik
+
+        mainWebView.stopLoading()
+        mainWebView.onPause()
+        mainWebView.pauseTimers()
+
+        popupWebView?.apply {
+            stopLoading()
+            onPause()
+        }
+
+        mainWebView.clearHistory()
+        mainWebView.clearCache(false)
+        mainWebView.clearFormData()
+        mainWebView.loadUrl("about:blank")
+
+        (mainWebView.parent as? ViewGroup)?.removeView(mainWebView)
+        mainWebView.destroy()
+
+        popupWebView?.let { popupView ->
+            popupView.loadUrl("about:blank")
+            binding.rootContainer.removeView(popupView)
+            popupView.destroy()
+        }
+        popupWebView = null
+
+        webExtension.destroy()
+        super.onDestroy()
+    }
+
+    private class DefaultWebViewClient(activity: KomikActivity) : WebViewClient() {
+        private val activityRef = WeakReference(activity)
+
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            val urlString = request.url.toString()
+            val extension = activityRef.get()?.webExtension ?: return null
+
+            if (urlString.contains("googletagmanager")) {
+                return WebResourceResponse("text/plain", "utf-8", EMPTY_INPUT_STREAM)
+            }
+
+            return if (extension.shouldIntercept(urlString, request)) {
+                extension.intercept(request)
+            } else {
+                null
+            }
+        }
+
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            val urlString = request.url.toString()
+            val activity = activityRef.get() ?: return false
+
+            if (isInternalNavigation(urlString)) return false
+
+            return try {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(urlString)))
+                true
+            } catch (e: Exception) {
+                Logger.e(TAG, "Cannot launch external application for URL: $urlString", e)
+                false
+            }
+        }
+
+        private fun isInternalNavigation(url: String): Boolean {
+            return url.contains("accounts.google.com") || url.contains("shinigami") || url.contains("shngm")
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-          enableEruda(view)
+            val activity = activityRef.get() ?: return
+            activity.viewModel.onPageFinished()
+            activity.injectErudaConsole(view)
         }
-      }
 
-      webChromeClient = AppChromeClient()
-    }
-  }
-
-  override fun openPopup(url: String) {
-    val newWeb = createPopupWebView()
-
-    popup = newWeb
-    val params = ConstraintLayout.LayoutParams(
-      ConstraintLayout.LayoutParams.MATCH_PARENT,
-      ConstraintLayout.LayoutParams.MATCH_PARENT
-    )
-    root.addView(newWeb, params)
-    swipe.isVisible = false
-
-    newWeb.loadUrl(url)
-  }
-
-  private inner class AppWebClient : WebViewClient() {
-    override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
-      val url = req.url.toString()
-
-      if (url.contains("googletagmanager")) {
-        return WebResourceResponse("text/plain", "utf-8", EMPTY_STREAM)
-      }
-
-      return if (ext.shouldHook(url, req)) ext.hook(req) else null
-    }
-
-    override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
-      val url = req.url.toString()
-
-      if (internal(url)) return false
-
-      return try {
-        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        true
-      } catch (e: Exception) {
-        Logger.e(TAG, "Can't open external URL", e)
-        false
-      }
-    }
-
-    private fun internal(url: String) =
-      url.contains("accounts.google.com") || url.contains("shinigami") || url.contains("shngm")
-
-    override fun onPageFinished(view: WebView, url: String) {
-      vm.onPageDone()
-      enableEruda(view)
-    }
-
-    override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
-      if (req.isForMainFrame) Logger.w(TAG, "Page error: ${err.description}")
-    }
-  }
-
-  private inner class AppChromeClient : WebChromeClient() {
-    override fun onProgressChanged(view: WebView, progress: Int) {
-      vm.updateProgress(progress)
-    }
-
-    override fun onJsAlert(view: WebView?, url: String?, msg: String?, res: JsResult?): Boolean {
-      if (res == null) return false
-      DialogManager.info(this@KomikActivity, getDomain(url), msg ?: "", "OK") { res.confirm() }
-      return true
-    }
-
-    override fun onJsConfirm(view: WebView?, url: String?, msg: String?, res: JsResult?): Boolean {
-      if (res == null) return false
-      DialogManager.confirm(this@KomikActivity, getDomain(url), msg ?: "", "OK", "Batal",
-        { res.confirm() }, { res.cancel() })
-      return true
-    }
-
-    override fun onJsPrompt(view: WebView?, url: String?, msg: String?, def: String?, res: JsPromptResult?): Boolean {
-      if (res == null) return false
-      DialogManager.prompt(this@KomikActivity, getDomain(url), msg ?: "", def ?: "",
-        onDone = { it: String -> res.confirm(it) }, onCancel = { res.cancel() })
-      return true
-    }
-
-    override fun onShowFileChooser(view: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
-      fileCallback?.onReceiveValue(null)
-      fileCallback = cb
-
-      if (!hasStoragePerm()) {
-        pendingFileChooserParams = params
-        requestStoragePerm()
-        return true
-      }
-
-      try {
-        val intent = params.createIntent().apply { addCategory(Intent.CATEGORY_OPENABLE) }
-
-        if (intent.resolveActivity(packageManager) != null) {
-          filePicker.launch(intent)
-        } else {
-          Toast.makeText(this@KomikActivity, "Tidak ada aplikasi file manager", Toast.LENGTH_SHORT).show()
-          fileCallback?.onReceiveValue(null)
-          fileCallback = null
-          return false
+        override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+            if (request.isForMainFrame) {
+                Logger.w(TAG, "Main frame failed to load: ${error.description}")
+            }
         }
-      } catch (e: Exception) {
-        Toast.makeText(this@KomikActivity, "Gagal membuka file picker", Toast.LENGTH_SHORT).show()
-        fileCallback?.onReceiveValue(null)
-        fileCallback = null
-        return false
-      }
-
-      return true
     }
 
-    override fun onCreateWindow(view: WebView?, isDialog: Boolean, gesture: Boolean, msg: Message?): Boolean {
-      val newWeb = createPopupWebView()
-      popup = newWeb
+    private class DefaultWebChromeClient(activity: KomikActivity) : WebChromeClient() {
+        private val activityRef = WeakReference(activity)
 
-      val params = ConstraintLayout.LayoutParams(
-        ConstraintLayout.LayoutParams.MATCH_PARENT,
-        ConstraintLayout.LayoutParams.MATCH_PARENT
-      )
-      root.addView(newWeb, params)
-      swipe.isVisible = false
+        override fun onProgressChanged(view: WebView, newProgress: Int) {
+            activityRef.get()?.viewModel?.updateLoadingProgress(newProgress)
+        }
 
-      (msg?.obj as? WebView.WebViewTransport)?.webView = newWeb
-      msg?.sendToTarget()
+        override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+            val activity = activityRef.get()
+            if (result == null || activity == null) return false
+            DialogManager.info(activity, activity.extractDomainFromUrl(url), message ?: "", "OK") { result.confirm() }
+            return true
+        }
 
-      return true
+        override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+            val activity = activityRef.get()
+            if (result == null || activity == null) return false
+            DialogManager.confirm(
+                ctx = activity,
+                title = activity.extractDomainFromUrl(url),
+                msg = message ?: "",
+                yesText = "OK",
+                noText = "Batal",
+                onYes = { result.confirm() },
+                onNo = { result.cancel() }
+            )
+            return true
+        }
+
+        override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: JsPromptResult?): Boolean {
+            val activity = activityRef.get()
+            if (result == null || activity == null) return false
+            DialogManager.prompt(
+                ctx = activity,
+                title = activity.extractDomainFromUrl(url),
+                msg = message ?: "",
+                defaultInput = defaultValue ?: "",
+                onDone = { input -> result.confirm(input) },
+                onCancel = { result.cancel() }
+            )
+            return true
+        }
+
+        override fun onShowFileChooser(webView: WebView, filePathCallback: ValueCallback<Array<Uri>>, fileChooserParams: FileChooserParams): Boolean {
+            val activity = activityRef.get() ?: return false
+
+            activity.fileUploadCallback?.onReceiveValue(null)
+            activity.fileUploadCallback = filePathCallback
+
+            if (!activity.hasRequiredStoragePermission()) {
+                activity.pendingFileChooserParams = fileChooserParams
+                activity.requestStoragePermission()
+                return true
+            }
+
+            activity.launchFileChooser(fileChooserParams)
+            return true
+        }
+
+        override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
+            val activity = activityRef.get() ?: return false
+            val newWebView = WebView(activity).apply {
+                activity.configureWebSettings(this)
+                webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                        if (request.url.toString().contains("googletagmanager")) {
+                            return WebResourceResponse("text/plain", "utf-8", EMPTY_INPUT_STREAM)
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+                    override fun onPageFinished(view: WebView, url: String) {
+                        activity.injectErudaConsole(view)
+                    }
+                }
+                webChromeClient = this@DefaultWebChromeClient
+            }
+
+            activity.popupWebView = newWebView
+            val layoutParams = ConstraintLayout.LayoutParams(
+                ConstraintLayout.LayoutParams.MATCH_PARENT,
+                ConstraintLayout.LayoutParams.MATCH_PARENT
+            )
+            activity.binding.rootContainer.addView(newWebView, layoutParams)
+            activity.binding.swipeRefreshLayout.isVisible = false
+
+            val transport = resultMsg?.obj as? WebView.WebViewTransport
+            transport?.webView = newWebView
+            resultMsg?.sendToTarget()
+
+            return true
+        }
     }
-  }
 
-  private fun closePopup() {
-    popup?.let {
-      it.stopLoading()
-      root.removeView(it)
-      it.destroy()
-      popup = null
-      swipe.isVisible = true
+    companion object {
+        private const val TAG = "KomikActivity"
+        private const val PREF_WELCOME_SHOWN = "welcome_dialog_displayed"
+
+        private val EMPTY_INPUT_STREAM = ByteArrayInputStream(ByteArray(0))
+
+        private val JAVASCRIPT_IMAGE_DETECTOR = """
+            (function(x, y) {
+                const elements = document.elementsFromPoint(x, y);
+                if (!elements.length) return null;
+                const extractUrl = (node) => {
+                    if (!node) return null;
+                    const tag = node.tagName.toUpperCase();
+                    if (tag === 'IMG') return node.currentSrc || (node.srcset && node.srcset.split(' ')[0]) || node.src || node.dataset.src || node.dataset.lazySrc;
+                    if (tag === 'CANVAS') { try { return node.toDataURL(); } catch (e) { return null; } }
+                    if (tag === 'IMAGE' || tag === 'SVG') return (node.href && node.href.baseVal) || node.getAttribute('xlink:href');
+                    const bgImage = getComputedStyle(node).backgroundImage;
+                    if (bgImage && bgImage !== 'none' && bgImage.startsWith('url(')) {
+                        const match = bgImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+                        if (match) return match[1];
+                    }
+                    return null;
+                };
+                for (let i = 0; i < elements.length; i++) {
+                    const url = extractUrl(elements[i]);
+                    if (url) return url;
+                }
+                let parent = elements[0];
+                for (let d = 0; d < 5 && parent; d++) {
+                    const url = extractUrl(parent);
+                    if (url) return url;
+                    parent = parent.parentElement;
+                }
+                return null;
+            })(%d, %d);
+        """.trimIndent().replace("\n", "").replace(Regex("\\s+"), " ")
     }
-  }
-
-  private fun showMenu(url: String) {
-    ContextMenuSheet.newInstance(url).show(supportFragmentManager, "menu")
-  }
-
-  private fun getDomain(url: String?) = try {
-    Uri.parse(url).host ?: "Website"
-  } catch (e: Exception) {
-    "Website"
-  }
-
-  private fun checkFirstRun() {
-    val prefs = getSharedPreferences("Shinigami", MODE_PRIVATE)
-    if (!prefs.getBoolean("welcome_shown", false)) {
-      DialogManager.info(this, "Welcome new user!",
-        "Login dengan akun Google untuk membuka fitur premium secara gratis.")
-      prefs.edit().putBoolean("welcome_shown", true).apply()
-    }
-  }
-
-  override fun onPause() {
-    super.onPause()
-    web.onPause()
-    popup?.onPause()
-  }
-
-  override fun onResume() {
-    super.onResume()
-    web.onResume()
-    popup?.onResume()
-  }
-
-  override fun onDestroy() {
-    val webView: WebView = web
-
-    webView.stopLoading()
-    webView.onPause()
-    webView.pauseTimers()
-
-    popup?.apply {
-      stopLoading()
-      onPause()
-    }
-
-    webView.clearHistory()
-    webView.clearCache(false)
-    webView.clearFormData()
-    webView.loadUrl("about:blank")
-    (webView.parent as? ViewGroup)?.removeView(webView)
-
-    popup?.let { popupView: WebView ->
-      popupView.loadUrl("about:blank")
-      root.removeView(popupView)
-      popupView.destroy()
-    }
-    popup = null
-
-    webView.destroy()
-    ext.kill()
-
-    super.onDestroy()
-  }
 }
