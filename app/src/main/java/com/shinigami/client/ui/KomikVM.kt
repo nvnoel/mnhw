@@ -14,46 +14,56 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 data class KomikUiState(
-  val url: String? = null,
-  val loading: Boolean = true,
-  val progress: Int = 0,
-  val splash: Boolean = true
+    val url: String? = null,
+    val isLoading: Boolean = true,
+    val loadingProgress: Int = 0,
+    val isSplashVisible: Boolean = true
 )
 
-class KomikViewModel(app: Application) : AndroidViewModel(app) {
+class KomikViewModel(application: Application) : AndroidViewModel(application) {
 
-  private val net = NetworkManager(app)
-  private val config = ConfigManager(
-    app.getSharedPreferences("Shinigami", Context.MODE_PRIVATE)
-  )
+    private val networkManager = NetworkManager(application)
+    private val configManager = ConfigManager(
+        application.getSharedPreferences("Shinigami", Context.MODE_PRIVATE)
+    )
 
-  private val _state = MutableStateFlow(KomikUiState())
-  val uiState: StateFlow<KomikUiState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow(KomikUiState())
+    val uiState: StateFlow<KomikUiState> = _uiState.asStateFlow()
 
-  val defaultHeaders: Map<String, String> = mapOf("Accept-Language" to Locale.getDefault().language)
+    val defaultHeaders: Map<String, String> = mapOf("Accept-Language" to Locale.getDefault().language)
 
-  init {
-    setup()
-  }
-
-  private fun setup() {
-    viewModelScope.launch {
-      net.networkStatus.collect { connected ->
-        if (connected && _state.value.url == null) {
-          // fetch url dari remote config dulu
-          val url = config.getUrl()
-          _state.update { it.copy(url = url) }
-        }
-      }
+    init {
+        initializeData()
     }
-  }
 
-  fun updateProgress(p: Int) {
-    _state.update { it.copy(progress = p) }
-    if (p == 100) onPageDone()
-  }
+    private fun initializeData() {
+        viewModelScope.launch {
+            networkManager.networkStatus.collect { isConnected ->
+                if (isConnected && _uiState.value.url == null) {
+                    val remoteUrl = configManager.getUrl()
+                    _uiState.update { currentState ->
+                        currentState.copy(url = remoteUrl)
+                    }
+                }
+            }
+        }
+    }
 
-  fun onPageDone() {
-    _state.update { it.copy(loading = false, splash = false) }
-  }
+    fun updateLoadingProgress(progress: Int) {
+        _uiState.update { currentState ->
+            currentState.copy(loadingProgress = progress)
+        }
+        if (progress == 100) {
+            onPageFinished()
+        }
+    }
+
+    fun onPageFinished() {
+        _uiState.update { currentState ->
+            currentState.copy(
+                isLoading = false,
+                isSplashVisible = false
+            )
+        }
+    }
 }

@@ -2,7 +2,6 @@ package com.shinigami.client
 
 import android.app.Application
 import android.content.Intent
-import android.os.Process
 import android.util.Log
 import com.google.android.material.color.DynamicColors
 import com.shinigami.client.ui.DebugActivity
@@ -11,33 +10,41 @@ import kotlin.system.exitProcess
 
 class aeldyStudio : Application() {
 
-  override fun onCreate() {
-    super.onCreate()
-    Logger.init(this)
-    DynamicColors.applyToActivitiesIfAvailable(this)
-    setupGlobalErrorHandler()
-  }
+    override fun onCreate() {
+        super.onCreate()
 
-  private fun setupGlobalErrorHandler() {
-    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
-    Thread.setDefaultUncaughtExceptionHandler { t, err ->
-      try {
-        Logger.logCrash(err)
-        Logger.e("App", "Crash in ${t.name}", err)
-        Logger.flushNow()
-        val intent = Intent(this, DebugActivity::class.java).apply {
-          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-          putExtra("error", Log.getStackTraceString(err))
-        }
-        startActivity(intent)
-        Thread.sleep(300)
-      } catch (e: Exception) {
-        Log.e("App", "Failed to handle crash", e)
-      } finally {
-        // Matikan proses dengan bersih
-        Logger.shutdown()
-        exitProcess(10)
-      }
+        initializeDependencies()
+        setupGlobalCrashHandler()
     }
-  }
+
+    private fun initializeDependencies() {
+        Logger.init(this)
+        DynamicColors.applyToActivitiesIfAvailable(this)
+    }
+
+    private fun setupGlobalCrashHandler() {
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                Logger.logCrash(throwable)
+                Logger.e(TAG, "Fatal crash occurred in thread: ${thread.name}", throwable)
+                Logger.shutdown() // Pastikan IO flush sblm process die
+
+                val crashIntent = Intent(this, DebugActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                    putExtra(DebugActivity.EXTRA_ERROR_MESSAGE, Log.getStackTraceString(throwable))
+                }
+
+                startActivity(crashIntent)
+                Thread.sleep(300)
+            } catch (e: Exception) {
+                Log.e(TAG, "Crash handler failed to execute safely", e)
+            } finally {
+                exitProcess(10)
+            }
+        }
+    }
+
+    companion object {
+        private const val TAG = "AppApplication"
+    }
 }

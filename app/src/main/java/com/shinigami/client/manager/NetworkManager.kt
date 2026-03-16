@@ -9,30 +9,40 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-class NetworkManager(ctx: Context) {
+class NetworkManager(context: Context) {
 
-  private val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-  val networkStatus: Flow<Boolean> = callbackFlow {
-    val cb = object : ConnectivityManager.NetworkCallback() {
-      override fun onAvailable(net: Network) = trySend(true).let {}
-      override fun onLost(net: Network) = trySend(false).let {}
-      override fun onUnavailable() = trySend(false).let {}
+    val networkStatus: Flow<Boolean> = callbackFlow {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                trySend(true)
+            }
+
+            override fun onLost(network: Network) {
+                trySend(false)
+            }
+
+            override fun onUnavailable() {
+                trySend(false)
+            }
+        }
+
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        connectivityManager?.registerNetworkCallback(request, callback)
+        trySend(checkConnectionNow())
+
+        awaitClose {
+            connectivityManager?.unregisterNetworkCallback(callback)
+        }
     }
 
-    val req = NetworkRequest.Builder()
-      .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-      .build()
-
-    cm?.registerNetworkCallback(req, cb)
-    trySend(checkConnectionNow())
-
-    awaitClose { cm?.unregisterNetworkCallback(cb) }
-  }
-
-  fun checkConnectionNow(): Boolean {
-    val net = cm?.activeNetwork ?: return false
-    val caps = cm.getNetworkCapabilities(net) ?: return false
-    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-  }
+    private fun checkConnectionNow(): Boolean {
+        val activeNetwork = connectivityManager?.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
 }

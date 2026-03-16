@@ -14,13 +14,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.widget.ImageView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
-import com.shinigami.client.R
+import com.shinigami.client.databinding.FragmentContextMenuBinding
 import com.shinigami.client.extension.WebExtension
 import com.shinigami.client.util.Logger
 import kotlinx.coroutines.Dispatchers
@@ -30,113 +29,155 @@ import okhttp3.Request
 
 class ContextMenuSheet : BottomSheetDialogFragment() {
 
-  private var url: String? = null
+    private var targetUrl: String? = null
+    private var _binding: FragmentContextMenuBinding? = null
+    private val binding get() = _binding!!
 
-  // referensi view disimpan manual karena tanpa ViewBinding
-  private var imgPreview: ImageView? = null
-
-  companion object {
-    private const val TAG = "ContextMenu"
-    fun newInstance(url: String) = ContextMenuSheet().apply {
-      arguments = Bundle().apply { putString("url", url) }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        targetUrl = arguments?.getString(ARG_URL)
     }
-  }
 
-  override fun onCreate(state: Bundle?) {
-    super.onCreate(state)
-    url = arguments?.getString("url")
-  }
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        _binding = FragmentContextMenuBinding.inflate(inflater, container, false)
+        return binding.root
+    }
 
-  override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, state: Bundle?): View {
-    return inflater.inflate(R.layout.fragment_context_menu, container, false)
-  }
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
 
-  override fun onViewCreated(view: View, state: Bundle?) {
-    super.onViewCreated(view, state)
+        binding.txtUrl.text = targetUrl
 
-    imgPreview = view.findViewById(R.id.img_preview)
-    view.findViewById<TextView>(R.id.txt_url).text = url
+        setupClickListeners()
 
-    view.findViewById<TextView>(R.id.btn_open).setOnClickListener { openBrowser(); dismiss() }
-    view.findViewById<TextView>(R.id.btn_copy).setOnClickListener { copyUrl(); dismiss() }
-    view.findViewById<TextView>(R.id.btn_download).setOnClickListener { download(); dismiss() }
-    view.findViewById<TextView>(R.id.btn_share).setOnClickListener { share(); dismiss() }
-
-    url?.let { loadImg(it) }
-  }
-
-  override fun onStart() {
-    super.onStart()
-    (dialog as? BottomSheetDialog)?.behavior?.addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
-      override fun onStateChanged(v: View, newState: Int) {
-        if (newState == BottomSheetBehavior.STATE_EXPANDED) {
-          url?.let { (activity as? PopupHost)?.openPopup(it); dismiss() }
+        targetUrl?.let {
+            loadImagePreview(it)
         }
-      }
-      override fun onSlide(v: View, o: Float) {}
-    })
-  }
+    }
 
-  override fun onDestroyView() {
-    super.onDestroyView()
-    imgPreview = null
-  }
+    override fun onStart() {
+        super.onStart()
+        val dialog = dialog as? BottomSheetDialog
+        dialog?.behavior?.addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
+            override fun onStateChanged(bottomSheet: View, newState: Int) {
+                if (newState == BottomSheetBehavior.STATE_EXPANDED) {
+                    targetUrl?.let {
+                        (activity as? PopupHost)?.openPopupWebView(it)
+                        dismiss()
+                    }
+                }
+            }
 
-  private fun openBrowser() = safeExec { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            override fun onSlide(bottomSheet: View, slideOffset: Float) {
+                // Not needed
+            }
+        })
+    }
 
-  private fun copyUrl() = safeExec {
-    (requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-      .setPrimaryClip(ClipData.newPlainText("URL", url))
-    toast("Link disalin")
-  }
-
-  private fun download() = safeExec {
-    val req = DownloadManager.Request(Uri.parse(url))
-      .setTitle("Mengunduh Gambar")
-      .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-      .setDestinationInExternalPublicDir(Environment.DIRECTORY_PICTURES, "Shinigami/IMG_${System.currentTimeMillis()}.jpg")
-    (requireContext().getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
-    toast("Sedang mengunduh...")
-  }
-
-  private fun share() = safeExec {
-    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-      type = "text/plain"; putExtra(Intent.EXTRA_TEXT, url)
-    }, "Bagikan"))
-  }
-
-  private fun loadImg(imgUrl: String) {
-    lifecycleScope.launch(Dispatchers.IO) {
-      try {
-        val req = Request.Builder()
-          .url(imgUrl)
-          .apply { CookieManager.getInstance().getCookie(imgUrl)?.let { header("Cookie", it) } }
-          .build()
-
-        val bmp = WebExtension.sharedClient.newCall(req).execute().use { res ->
-          res.body.byteStream().buffered().let { BitmapFactory.decodeStream(it) }
+    private fun setupClickListeners() {
+        binding.btnOpen.setOnClickListener {
+            executeSafeAction {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)))
+                dismiss()
+            }
         }
 
-        withContext(Dispatchers.Main) {
-          val img = imgPreview ?: return@withContext
-          if (bmp != null) {
-            img.setImageBitmap(bmp)
-            img.scaleType = ImageView.ScaleType.CENTER_CROP
-            img.imageTintList = null
-          }
+        binding.btnCopy.setOnClickListener {
+            executeSafeAction {
+                val clipboard = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("URL", targetUrl))
+                showToast("Tautan disalin")
+                dismiss()
+            }
         }
-      } catch (e: Exception) {
-        Logger.e(TAG, "ImgErr", e)
-      }
-    }
-  }
 
-  private fun safeExec(block: () -> Unit) {
-    try { block() } catch (e: Exception) {
-      Logger.e(TAG, "Action failed", e)
-      toast("Gagal memproses aksi")
-    }
-  }
+        binding.btnDownload.setOnClickListener {
+            executeSafeAction {
+                val request = DownloadManager.Request(Uri.parse(targetUrl))
+                    .setTitle("Mengunduh Gambar")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalPublicDir(
+                        Environment.DIRECTORY_PICTURES,
+                        "Shinigami/IMG_${System.currentTimeMillis()}.jpg"
+                    )
 
-  private fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                val downloadManager = requireContext().getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                downloadManager.enqueue(request)
+                showToast("Proses unduh dimulai...")
+                dismiss()
+            }
+        }
+
+        binding.btnShare.setOnClickListener {
+            executeSafeAction {
+                val shareIntent = Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, targetUrl)
+                }, "Bagikan tautan")
+                startActivity(shareIntent)
+                dismiss()
+            }
+        }
+    }
+
+    private fun loadImagePreview(imageUrl: String) {
+        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val cookie = CookieManager.getInstance().getCookie(imageUrl)
+                val requestBuilder = Request.Builder().url(imageUrl)
+                cookie?.let { requestBuilder.header("Cookie", it) }
+
+                val request = requestBuilder.build()
+
+                WebExtension.sharedHttpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val bitmap = response.body?.byteStream()?.buffered()?.let {
+                            BitmapFactory.decodeStream(it)
+                        }
+
+                        withContext(Dispatchers.Main) {
+                            if (_binding != null && bitmap != null) {
+                                binding.imgPreview.setImageBitmap(bitmap)
+                                binding.imgPreview.scaleType = ImageView.ScaleType.CENTER_CROP
+                                binding.imgPreview.imageTintList = null
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Logger.e(TAG, "Image preview load failed", e)
+            }
+        }
+    }
+
+    private fun executeSafeAction(action: () -> Unit) {
+        try {
+            action()
+        } catch (e: Exception) {
+            Logger.e(TAG, "Action execution failed", e)
+            showToast("Gagal memproses aksi tersebut")
+        }
+    }
+
+    private fun showToast(message: String) {
+        context?.let { Toast.makeText(it, message, Toast.LENGTH_SHORT).show() }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+
+    companion object {
+        private const val TAG = "ContextMenuSheet"
+        private const val ARG_URL = "arg_target_url"
+
+        fun newInstance(url: String): ContextMenuSheet {
+            return ContextMenuSheet().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_URL, url)
+                }
+            }
+        }
+    }
 }

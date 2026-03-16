@@ -1,5 +1,5 @@
 package com.shinigami.client.ui
 
 interface PopupHost {
-  fun openPopup(url: String)
+    fun openPopupWebView(url: String)
 }
