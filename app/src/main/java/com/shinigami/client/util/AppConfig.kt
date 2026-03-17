@@ -16,5 +16,5 @@ object AppConfig {
     const val VERSION_CODE = 170
 
     const val BASE_URL = "https://shinigami.to"
-    const val CONFIG_URL = "https://gist.githubusercontent.com/nvnoel/0f8d0eb0181ab79690cae43a21b41471/raw/c731f0ee231d166cfdc73bb797ab87a1a8dd6d2a/url.txt"
+    const val CONFIG_URL = "https://gist.githubusercontent.com/nvnoel/03f49361806a77c36c813ec1898c1240/raw/1b4be5c1d19a92abf5517da0b098e4ed856d5dcc/url.shngm"
 }
