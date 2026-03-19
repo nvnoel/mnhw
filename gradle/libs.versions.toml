@@ -11,7 +11,7 @@ appcompat = "1.7.1"
 constraintlayout = "2.2.1"
 swiperefreshlayout = "1.2.0"
 activityKtx = "1.13.0"
-fragmentKtx = "1.8.6"
+fragmentKtx = "1.8.9"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
