@@ -60,7 +60,7 @@ jobs:
           echo "tag_name=release-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
       - name: Create Release and Upload Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.tag_name }}
           name: Release ${{ env.tag_name }}
